@@ -20,19 +20,19 @@ void print_ip(struct in_addr ip) {
   printf("%d.%d.%d.%d\n", ip.s_addr >> 24, ((ip.s_addr >> 16 & 0xff)), ((ip.s_addr >> 8) & 0xff), ip.s_addr & 0xff);
 }
 int is_all0_mac(uint8_t* mac){
-  for(int i = 0; i < 6; i++){
+  for(int i = 0; i < MAC_ADDRESS_LEN; i++){
     if(mac[i] != 0) return 0;
   }
   return 1;  
 }
 int is_broadcast_mac(uint8_t* mac) {
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < MAC_ADDRESS_LEN; i++) {
     if (mac[i] != 0xff) return 0;
   }
   return 1;
 }
 int mac_cmp(uint8_t* m1, uint8_t* m2){
-  for(int i = 0; i < 6; i++){
+  for (int i = 0; i < MAC_ADDRESS_LEN; i++) {
     if(m1[i] != m2[i]) return (int)m1[i] - m2[i];
   }
   return 0;
@@ -68,8 +68,8 @@ void arp_hdr_to_packet(uint8_t* packet, uint8_t opcode, uint8_t* s_mac, struct i
   packet[pos] = t_ip.s_addr & 0xff;
 }
 void packet_to_eth_hdr(const uint8_t* p, struct libnet_ethernet_hdr* eth_hdr){
-  for (int i = 0; i < 6; i++) eth_hdr->ether_dhost[i] = (uint8_t) * (p++);
-  for (int i = 0; i < 6; i++) eth_hdr->ether_shost[i] = (uint8_t) * (p++);
+  for (int i = 0; i < MAC_ADDRESS_LEN; i++) eth_hdr->ether_dhost[i] = (uint8_t) * (p++);
+  for (int i = 0; i < MAC_ADDRESS_LEN; i++) eth_hdr->ether_shost[i] = (uint8_t) * (p++);
   eth_hdr->ether_type = ntohs(*static_cast<uint16_t*>(static_cast<void*>((const_cast<uint8_t*>(p)))));
 }
 
@@ -86,10 +86,10 @@ int packet_to_arp_hdr(const uint8_t* p, struct libnet_arp_hdr* arp_hdr, uint8_t*
   arp_hdr->ar_op = ntohs(*static_cast<uint16_t*>(static_cast<void*>((const_cast<uint8_t*>(p)))));
   p += 2;
   //if(arp_hdr->ar_op != ARPOP_REQUEST) return -1;
-  for (int i = 0; i < 6; i++) s_mac[i] = (uint8_t) * (p++);
+  for (int i = 0; i < MAC_ADDRESS_LEN; i++) s_mac[i] = (uint8_t) * (p++);
   s_ip->s_addr = ntohl(*static_cast<uint32_t*>(static_cast<void*>((const_cast<uint8_t*>(p)))));
   p += 4;
-  for (int i = 0; i < 6; i++) t_mac[i] = (uint8_t) * (p++);
+  for (int i = 0; i < MAC_ADDRESS_LEN; i++) t_mac[i] = (uint8_t) * (p++);
   t_ip->s_addr = ntohl(*static_cast<uint32_t*>(static_cast<void*>((const_cast<uint8_t*>(p)))));
   return 0;
 }
@@ -126,9 +126,9 @@ int packet_to_ip_hdr(const uint8_t* p, struct libnet_ipv4_hdr* ip_hdr){
 int discover_mac(pcap_t* handle, struct in_addr ip, struct in_addr my_ip, uint8_t* mac, uint8_t* my_mac){
   printf("[+] Broadcasting a request mac address of "); print_ip(ip);
   libnet_ethernet_hdr request_eth_hdr;
-  uint8_t broadcast_mac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+  uint8_t broadcast_mac[MAC_ADDRESS_LEN] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
   set_eth_hdr(&request_eth_hdr, broadcast_mac, my_mac, ETHERTYPE_ARP);
-  uint8_t request_sender_mac[6], request_target_mac[6];
+  uint8_t request_sender_mac[MAC_ADDRESS_LEN], request_target_mac[MAC_ADDRESS_LEN];
   struct in_addr request_sender_ip, request_target_ip;
   memcpy(request_sender_mac, my_mac, MAC_ADDRESS_LEN);
   memset(request_target_mac, 0x00, MAC_ADDRESS_LEN);
@@ -248,7 +248,7 @@ void forgy_arp_response_feedback(pcap_t* handle, struct in_addr* sender_ip, stru
       // parse ARP header
       if (len < ETHERNET_HEADER_LEN + ARP_HEADER_LEN) continue;
       libnet_arp_hdr arp_hdr;
-      uint8_t arp_sender_mac[6], arp_target_mac[6];
+      uint8_t arp_sender_mac[MAC_ADDRESS_LEN], arp_target_mac[MAC_ADDRESS_LEN];
       struct in_addr arp_sender_ip, arp_target_ip;
       if(packet_to_arp_hdr(p+ETHERNET_HEADER_LEN,&arp_hdr, arp_sender_mac, &arp_sender_ip, arp_target_mac, &arp_target_ip) == -1) continue;
       for(int i = 0; i < pair; i++){
@@ -330,9 +330,8 @@ int main(int argc, char *argv[]) {
     return -1;
   }
   int pair = (argc-2) / 2;
-  printf("pair : %d\n",pair);
   struct in_addr my_ip;
-  uint8_t my_mac[6];
+  uint8_t my_mac[MAC_ADDRESS_LEN];
   for(int i = 0; i < pair; i++){}
   if(get_my_addr(dev, &my_ip, my_mac) == -1){
     fprintf(stderr, "couldn't find ip/mac address\n");
